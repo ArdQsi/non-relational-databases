@@ -1,0 +1,234 @@
+name: lab2-opensearch
+
+# Пароли лабораторной (учебный стенд, поэтому лежат прямо здесь)
+# Сертификаты и internal_users.yml создаются init-контейнерами в именованных томах (certs, security),
+# поэтому записи в каталог проекта на хосте не требуется. Сменили ADMIN_PASSWORD / KIBANASERVER_PASSWORD -
+# выполните docker compose down -v, чтобы всё сгенерировалось заново.
+x-creds: &creds
+  ADMIN_PASSWORD: "Adm1n-Lab2-x7Qp-2026"
+  KIBANASERVER_PASSWORD: "Kibana-Lab2-m4Zt-2026"
+  LOG_WRITER_PASSWORD: "Writer-Lab2-k9Rv-2026"
+  LOG_READER_PASSWORD: "Reader-Lab2-d3Wn-2026"
+  MONITOR_PASSWORD: "Monitor-Lab2-b8Hs-2026"
+
+# Общие настройки узлов OpenSearch
+x-opensearch: &opensearch
+  build:
+    context: ./opensearch
+    args:
+      OS_VERSION: "3.8.0"
+      PROM_PLUGIN_VERSION: "3.8.0.0"
+  image: lab2/opensearch:3.8.0
+  restart: unless-stopped
+  # Перед стартом копируем сгенерированный internal_users.yml (лежит в томе security) на место
+  entrypoint: ["/bin/bash", "-c", "cp /gen-security/internal_users.yml /usr/share/opensearch/config/opensearch-security/internal_users.yml && exec ./opensearch-docker-entrypoint.sh opensearch"]
+  environment:
+    OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+    # Демо-конфигурация (демо-сертификаты, admin:admin) НЕ используется
+    DISABLE_INSTALL_DEMO_CONFIG: "true"
+  ulimits:
+    memlock: { soft: -1, hard: -1 }
+    nofile: { soft: 65536, hard: 65536 }
+  networks: [lab2]
+
+services:
+  # ------------------------------------------------ Одноразовые init-контейнеры
+  certs-init:       # свой CA и сертификаты -> том certs
+    image: alpine/openssl:latest
+    container_name: lab2-certs-init
+    restart: "no"
+    user: root
+    entrypoint: ["/bin/sh", "-c", "tr -d '\\r' < /scripts/gen-certs.sh > /tmp/run.sh && sh /tmp/run.sh"]
+    volumes:
+      - ./scripts/gen-certs.sh:/scripts/gen-certs.sh:ro
+      - certs:/certs
+
+  security-init:    # bcrypt-хэши admin/kibanaserver -> том security
+    image: opensearchproject/opensearch:3.8.0
+    container_name: lab2-security-init
+    restart: "no"
+    user: root
+    entrypoint: ["/bin/bash", "-c", "tr -d '\\r' < /scripts/gen-security.sh > /tmp/run.sh && bash /tmp/run.sh"]
+    environment:
+      <<: *creds
+    volumes:
+      - ./scripts/gen-security.sh:/scripts/gen-security.sh:ro
+      - security:/out
+
+  setup:            # роли, пользователи, ISM-политика, шаблон, data stream
+    image: curlimages/curl:8.10.1
+    container_name: lab2-setup
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c", "tr -d '\\r' < /scripts/setup.sh > /tmp/run.sh && sh /tmp/run.sh"]
+    environment:
+      <<: *creds
+    depends_on: [os-cm1, os-hot1, os-warm1]
+    volumes:
+      - ./scripts/setup.sh:/scripts/setup.sh:ro
+      - ./api:/api:ro
+      - certs:/certs:ro
+    networks: [lab2]
+
+  # ---------------------------------------------------------------- OpenSearch
+  os-cm1:   # выделенный cluster manager
+    <<: *opensearch
+    container_name: os-cm1
+    depends_on:
+      certs-init: { condition: service_completed_successfully }
+      security-init: { condition: service_completed_successfully }
+    volumes:
+      - cm1-data:/usr/share/opensearch/data
+      - ./config/opensearch/os-cm1.yml:/usr/share/opensearch/config/opensearch.yml:ro
+      - certs:/usr/share/opensearch/config/certs:ro
+      - security:/gen-security:ro
+
+  os-hot1:  # HOT: data + ingest, свежие индексы
+    <<: *opensearch
+    container_name: os-hot1
+    depends_on:
+      certs-init: { condition: service_completed_successfully }
+      security-init: { condition: service_completed_successfully }
+      os-cm1: { condition: service_started }
+    ports:
+      - "127.0.0.1:9200:9200"
+    volumes:
+      - hot1-data:/usr/share/opensearch/data
+      - ./config/opensearch/os-hot1.yml:/usr/share/opensearch/config/opensearch.yml:ro
+      - certs:/usr/share/opensearch/config/certs:ro
+      - security:/gen-security:ro
+
+  os-warm1: # WARM: data, индексы после ротации
+    <<: *opensearch
+    container_name: os-warm1
+    depends_on:
+      certs-init: { condition: service_completed_successfully }
+      security-init: { condition: service_completed_successfully }
+      os-cm1: { condition: service_started }
+    volumes:
+      - warm1-data:/usr/share/opensearch/data
+      - ./config/opensearch/os-warm1.yml:/usr/share/opensearch/config/opensearch.yml:ro
+      - certs:/usr/share/opensearch/config/certs:ro
+      - security:/gen-security:ro
+
+  dashboards:
+    image: opensearchproject/opensearch-dashboards:3.8.0
+    container_name: os-dashboards
+    restart: unless-stopped
+    depends_on: [os-hot1]
+    ports:
+      - "5601:5601"
+    environment:
+      OPENSEARCH_PASSWORD: "Kibana-Lab2-m4Zt-2026"
+    volumes:
+      - ./config/dashboards/opensearch_dashboards.yml:/usr/share/opensearch-dashboards/config/opensearch_dashboards.yml:ro
+      - certs:/usr/share/opensearch-dashboards/config/certs:ro
+    networks: [lab2]
+
+  # ------------------------------------------------------- nginx + Fluent Bit
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: lab2-nginx
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/html:/usr/share/nginx/html:ro
+      - nginx-json-logs:/var/log/nginx-json
+    networks: [lab2]
+
+  fluent-bit:       # стартует только после успешного setup (там создаётся log_writer и data stream)
+    image: fluent/fluent-bit:4.0
+    container_name: lab2-fluent-bit
+    restart: unless-stopped
+    depends_on:
+      setup: { condition: service_completed_successfully }
+      nginx: { condition: service_started }
+    environment:
+      OS_WRITER_USER: "log_writer"
+      OS_WRITER_PASSWORD: "Writer-Lab2-k9Rv-2026"
+    volumes:
+      - ./fluent-bit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro
+      - ./fluent-bit/parsers.conf:/fluent-bit/etc/parsers.conf:ro
+      - certs:/fluent-bit/certs:ro
+      - nginx-json-logs:/var/log/nginx-json:ro
+      - fluent-bit-db:/fluent-bit/db
+    networks: [lab2]
+
+  # --------------------------------------------------------------- Мониторинг
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    container_name: lab2-prometheus
+    restart: unless-stopped
+    depends_on:
+      setup: { condition: service_completed_successfully }
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - certs:/etc/prometheus/certs:ro
+      - prometheus-data:/prometheus
+    networks: [lab2]
+
+  grafana:
+    image: grafana/grafana:12.2.0
+    container_name: lab2-grafana
+    restart: unless-stopped
+    depends_on: [prometheus]
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: "admin"
+      GF_SECURITY_ADMIN_PASSWORD: "Grafana-Lab2-t5Yc-2026"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards-json:ro
+      - grafana-data:/var/lib/grafana
+    networks: [lab2]
+
+  # ---------------------------------------- Вспомогательные (запуск по профилю)
+  traffic:          # docker compose --profile traffic up -d traffic
+    image: curlimages/curl:8.10.1
+    profiles: ["traffic"]
+    container_name: lab2-traffic
+    entrypoint: ["/bin/sh", "-c", "tr -d '\\r' < /scripts/traffic.sh > /tmp/run.sh && sh /tmp/run.sh \"$$@\"", "--"]
+    command: ["steady"]
+    volumes:
+      - ./scripts/traffic.sh:/scripts/traffic.sh:ro
+    networks: [lab2]
+    depends_on: [nginx]
+
+  traffic-burst:    # docker compose --profile burst run --rm traffic-burst
+    image: curlimages/curl:8.10.1
+    profiles: ["burst"]
+    entrypoint: ["/bin/sh", "-c", "tr -d '\\r' < /scripts/traffic.sh > /tmp/run.sh && sh /tmp/run.sh \"$$@\"", "--"]
+    command: ["burst", "5000"]
+    volumes:
+      - ./scripts/traffic.sh:/scripts/traffic.sh:ro
+    networks: [lab2]
+    depends_on: [nginx]
+
+  rbac-check:       # docker compose --profile check run --rm rbac-check
+    image: curlimages/curl:8.10.1
+    profiles: ["check"]
+    entrypoint: ["/bin/sh", "-c", "tr -d '\\r' < /scripts/rbac-check.sh > /tmp/run.sh && sh /tmp/run.sh"]
+    environment:
+      <<: *creds
+    volumes:
+      - ./scripts/rbac-check.sh:/scripts/rbac-check.sh:ro
+      - certs:/certs:ro
+    networks: [lab2]
+
+networks:
+  lab2:
+
+volumes:
+  certs:
+  security:
+  cm1-data:
+  hot1-data:
+  warm1-data:
+  nginx-json-logs:
+  fluent-bit-db:
+  prometheus-data:
+  grafana-data:

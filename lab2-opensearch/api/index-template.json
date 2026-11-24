@@ -1,0 +1,34 @@
+{
+  "index_patterns": ["logs"],
+  "data_stream": {
+    "timestamp_field": { "name": "@timestamp" }
+  },
+  "priority": 200,
+  "template": {
+    "settings": {
+      "index.number_of_shards": 1,
+      "index.number_of_replicas": 0,
+      "index.refresh_interval": "5s",
+      "index.routing.allocation.require.temp": "hot"
+    },
+    "mappings": {
+      "properties": {
+        "@timestamp":      { "type": "date" },
+        "time_iso8601":    { "type": "date" },
+        "remote_addr":     { "type": "ip" },
+        "remote_user":     { "type": "keyword" },
+        "request_method":  { "type": "keyword" },
+        "request_uri":     { "type": "keyword", "ignore_above": 1024 },
+        "server_protocol": { "type": "keyword" },
+        "status":          { "type": "short" },
+        "body_bytes_sent": { "type": "long" },
+        "request_time":    { "type": "float" },
+        "http_referer":    { "type": "keyword", "ignore_above": 1024 },
+        "http_user_agent": {
+          "type": "text",
+          "fields": { "raw": { "type": "keyword", "ignore_above": 512 } }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Запись только в data stream logs",
+  "cluster_permissions": [
+    "indices:data/write/bulk"
+  ],
+  "index_permissions": [
+    {
+      "index_patterns": ["logs", ".ds-logs-*"],
+      "allowed_actions": [
+        "indices:data/write/index",
+        "indices:data/write/bulk*",
+        "indices:admin/mapping/put"
+      ]
+    }
+  ]
+}
