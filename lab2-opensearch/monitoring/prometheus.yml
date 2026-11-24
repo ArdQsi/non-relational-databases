@@ -1,0 +1,18 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: opensearch
+    metrics_path: /_prometheus/metrics
+    scheme: https
+    basic_auth:
+      username: monitor_user
+      password: Monitor-Lab2-b8Hs-2026
+    tls_config:
+      ca_file: /etc/prometheus/certs/root-ca.pem
+    static_configs:
+      - targets:
+          - os-cm1:9200
+          - os-hot1:9200
+          - os-warm1:9200

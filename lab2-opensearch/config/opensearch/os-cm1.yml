@@ -1,0 +1,34 @@
+cluster.name: lab2-cluster
+node.name: os-cm1
+node.roles: [cluster_manager]
+node.attr.temp: master        # у cluster manager нет данных, атрибут чисто информативный
+
+network.host: 0.0.0.0
+discovery.seed_hosts: ["os-cm1"]
+cluster.initial_cluster_manager_nodes: ["os-cm1"]
+
+# ---------------- Security: TLS транспортного уровня (узел <-> узел) ----------------
+plugins.security.ssl.transport.pemcert_filepath: certs/os-cm1.pem
+plugins.security.ssl.transport.pemkey_filepath: certs/os-cm1-key.pem
+plugins.security.ssl.transport.pemtrustedcas_filepath: certs/root-ca.pem
+# Узлы в Docker находят друг друга по IP контейнера, а не по DNS-имени, поэтому проверка hostname
+# в сертификате здесь невозможна. Цепочка доверия (общий CA) и список nodes_dn по-прежнему проверяются.
+plugins.security.ssl.transport.enforce_hostname_verification: false
+
+# ---------------- Security: TLS REST ----------------
+plugins.security.ssl.http.enabled: true
+plugins.security.ssl.http.pemcert_filepath: certs/os-cm1.pem
+plugins.security.ssl.http.pemkey_filepath: certs/os-cm1-key.pem
+plugins.security.ssl.http.pemtrustedcas_filepath: certs/root-ca.pem
+
+# ---------------- Security: общие настройки ----------------
+plugins.security.allow_unsafe_democertificates: false
+plugins.security.allow_default_init_securityindex: true
+plugins.security.authcz.admin_dn:
+  - "CN=admin,OU=Lab,O=Lab2,C=RU"
+plugins.security.nodes_dn:
+  - "CN=os-*,OU=Lab,O=Lab2,C=RU"
+plugins.security.restapi.roles_enabled: ["all_access", "security_rest_api_access"]
+plugins.security.audit.type: internal_opensearch
+plugins.security.enable_snapshot_restore_privilege: true
+plugins.security.check_snapshot_restore_write_privileges: true

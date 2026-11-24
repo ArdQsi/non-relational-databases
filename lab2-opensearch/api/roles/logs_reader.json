@@ -1,0 +1,12 @@
+{
+  "description": "Только чтение индексов logs*",
+  "cluster_permissions": [
+    "cluster_composite_ops_ro"
+  ],
+  "index_permissions": [
+    {
+      "index_patterns": ["logs*", ".ds-logs*"],
+      "allowed_actions": ["read"]
+    }
+  ]
+}
