@@ -1,0 +1,23 @@
+groups:
+  - name: redis-cache
+    rules:
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 15s
+        labels: {severity: critical}
+      - alert: CacheHitRatioLow
+        expr: sum(rate(app_cache_hits_total[1m])) / (sum(rate(app_cache_hits_total[1m])) + sum(rate(app_cache_misses_total[1m]))) < 0.6
+        for: 2m
+        labels: {severity: warning}
+      - alert: RedisMemoryHigh
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.9
+        for: 2m
+        labels: {severity: warning}
+      - alert: RedisEvictions
+        expr: rate(redis_evicted_keys_total[1m]) > 0
+        for: 2m
+        labels: {severity: warning}
+      - alert: AppLatencyP95High
+        expr: histogram_quantile(0.95, sum(rate(app_http_request_duration_seconds_bucket[1m])) by (le)) > 0.1
+        for: 2m
+        labels: {severity: warning}

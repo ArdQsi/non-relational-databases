@@ -1,0 +1,95 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: shop
+      POSTGRES_PASSWORD: shop
+      POSTGRES_DB: shop
+    # параллельные запросы отключены, чтобы стоимость запроса была предсказуемой,
+    # а данные целиком помещались в память (shared_buffers)
+    command: >
+      postgres
+      -c shared_buffers=256MB
+      -c max_parallel_workers_per_gather=0
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shop"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7.2-alpine
+    # кэш: без персистентности, ограничение памяти, вытеснение по LRU
+    command: >
+      redis-server
+      --maxmemory 64mb
+      --maxmemory-policy allkeys-lru
+      --save ""
+      --appendonly no
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+
+  app:
+    build: ./app
+    environment:
+      DATABASE_URL: postgresql://shop:shop@postgres:5432/shop
+      REDIS_URL: redis://redis:6379/0
+      CACHE_TTL: "60"
+      NEGATIVE_TTL: "10"
+      WORKERS: "4"        # процессов uvicorn
+      DB_POOL_MAX: "5"    # соединений с PostgreSQL на процесс (итого 20)
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    ports:
+      - "8000:8000"
+
+  redis_exporter:
+    image: oliver006/redis_exporter:v1.62.0
+    command: ["--redis.addr=redis://redis:6379"]
+    depends_on: [redis]
+
+  postgres_exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    environment:
+      DATA_SOURCE_NAME: postgresql://shop:shop@postgres:5432/shop?sslmode=disable
+    depends_on:
+      postgres: {condition: service_healthy}
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on: [prometheus]
+
+  k6:
+    image: grafana/k6:0.52.0
+    profiles: ["load"]
+    volumes:
+      - ./loadtest:/scripts:ro
+    environment:
+      BASE_URL: http://app:8000
+      MODE: ${MODE:-cache}
+    command: run /scripts/k6.js
+    depends_on: [app]
+
+volumes:
+  pgdata:
